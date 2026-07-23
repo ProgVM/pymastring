@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymastring"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
     { name = "ProgVM", email = "progvminc@gmail.com" }
 ]
@@ -17,9 +17,6 @@ classifiers = [
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-]
-dependencies = [
-    "forbiddenfruit>=0.1.4"
 ]
 
 [project.urls]
