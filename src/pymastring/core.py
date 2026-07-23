@@ -232,15 +232,21 @@ def string_iter(self):
 
 def patch_strings():
     """
-    Injects all mathematical, matrix, bitwise, logical, length and iteration hooks 
-    into native 'str' class using safe C-level memory dictionary manipulation.
-    Bypasses standard mappingproxy restrictions and prevents forbiddenfruit errors.
+    Safely injects mathematical methods into the native 'str' class dictionary.
     """
-    # Find the real underlying mutable dictionary of the built-in 'str' class
-    # to bypass the read-only 'mappingproxy' proxy object constraints
-    target_dict = [obj for obj in gc.get_referents(str.__dict__) if type(obj) is dict][0]
+    # Find the underlying true dict inside mappingproxy referents safely
+    referents = gc.get_referents(str.__dict__)
+    target_dict = None
+    
+    for obj in referents:
+        if type(obj) is dict:
+            target_dict = obj
+            break
+            
+    if target_dict is None:
+        raise RuntimeError("Failed to locate native string mutable dictionary structure")
 
-    # Map every single custom dunder method directly into the str namespace dict
+    # Inject all operations directly into the CPython class namespace dictionary
     target_dict["__pow__"] = string_pow
     target_dict["__truediv__"] = string_truediv
     target_dict["__sub__"] = string_sub
@@ -258,9 +264,9 @@ def patch_strings():
     target_dict["__le__"] = string_le
     target_dict["__iter__"] = string_iter
 
-    # Crucial CPython API call to force internal type lookup cache evaluation 
-    # to clear up stale references and register new operations globally
+    # Force CPython to update type lookup caches globally
     ctypes.pythonapi.PyType_Modified(ctypes.py_object(str))
+
 
 # Dynamically synchronize the custom MathChar fallback operations
 for method in ["__pow__", "__truediv__", "__sub__", "__mod__", "__matmul__", "__len__",
