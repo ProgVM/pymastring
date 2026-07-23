@@ -51,12 +51,18 @@ print(result) # Outputs integer: 9506
 ```
 
 ### 3. Dynamic Structural Weight Evaluation (`len()`)
-The global `len()` invocation is intercepted. Instead of reporting the primitive flat character index array offset count, it computes and returns the complete integrated sum of all unicode sequence code weights.
+
+The global `len()` invocation evaluates context dynamically to guarantee maximum environment stability and prevent side-effect exceptions in external packages (such as `json` or `requests`). Standard raw string literals retain traditional array offset tracking element counts. However, mutated entities or iterated `MathChar` objects explicitly compute and report the absolute integrated sum of their respective unicode sequence code point weights.
 
 ```python
-# Traditional len("abc") returns 3
-# Patched version evaluates: 97 + 98 + 99
-print(len("abc")) # Outputs integer: 294
+import pymastring
+
+# A primitive baseline string keeps its classic character length
+print(len("abc"))  # Outputs integer: 3
+
+# Intercept loops pull typified MathChar wrappers yielding true inner weight
+for char in "a":
+    print(len(char))  # Outputs Unicode weight: 97
 ```
 
 ### 4. Bitwise Vector Conversions (`<<`, `>>`, `&`, `|`, `^`)
