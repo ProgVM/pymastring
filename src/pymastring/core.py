@@ -16,6 +16,13 @@ ALL_METHODS = [
     "iter", "reversed"
 ]
 
+# Try importing native C extension for ultra performance
+try:
+    from . import _fastmath
+    _HAS_C_EXT = True
+except ImportError:
+    _HAS_C_EXT = False
+
 # Try importing numpy for SIMD vector acceleration if available
 try:
     import numpy as np
@@ -206,12 +213,14 @@ class MathJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-# --- Core Mathematical Operators (Vectorized) ---
+# --- Core Mathematical Operators (C-Accelerated & Vectorized) ---
 
 def string_add(self, other):
     if isinstance(other, str):
         return _ORIGINAL_STR_ADD(self, other)
     elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE, bool)):
+        if _HAS_C_EXT:
+            return _fastmath.fast_add_scalar(self, int(other))
         codes = _str_to_codes(self)
         shift = int(other)
         return _codes_to_str(codes + shift)
@@ -224,39 +233,39 @@ def string_radd(self, other):
 
 def string_pow(self, power, modulo=None):
     if isinstance(power, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        p_val = power
+        p_val = int(power)
     else:
-        p_val = _get_weight(power)
+        p_val = int(_get_weight(power))
+    
+    if _HAS_C_EXT and p_val >= 0:
+        return _fastmath.fast_pow_scalar(self, p_val)
     
     codes = _str_to_codes(self)
     res = []
     for x in codes:
-        if isinstance(p_val, (int, _ORIG_INT_TYPE)) and p_val >= 0:
-            res.append(pow(int(x), int(p_val), 1114112))
-        else:
-            try:
-                res.append(pow(int(x), int(p_val), 1114112))
-            except Exception:
-                res.append(int(int(x) ** p_val) % 1114112)
+        try:
+            res.append(pow(int(x), p_val, 1114112))
+        except Exception:
+            res.append(int(int(x) ** p_val) % 1114112)
     return _codes_to_str(res)
 
 
 def string_rpow(self, base):
     if isinstance(base, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        b_val = base
+        b_val = int(base)
     else:
-        b_val = _get_weight(base)
+        b_val = int(_get_weight(base))
+        
+    if _HAS_C_EXT and b_val >= 0:
+        return _fastmath.fast_rpow_scalar(b_val, self)
         
     codes = _str_to_codes(self)
     res = []
     for x in codes:
-        if isinstance(b_val, (int, _ORIG_INT_TYPE)) and b_val >= 0:
-            res.append(pow(int(b_val), int(x), 1114112))
-        else:
-            try:
-                res.append(pow(int(b_val), int(x), 1114112))
-            except Exception:
-                res.append(int(b_val ** int(x)) % 1114112)
+        try:
+            res.append(pow(b_val, int(x), 1114112))
+        except Exception:
+            res.append(int(b_val ** int(x)) % 1114112)
     return _codes_to_str(res)
 
 
@@ -264,6 +273,8 @@ def string_mul(self, other):
     if isinstance(other, _ORIG_INT_TYPE):
         return _ORIGINAL_STR_MUL(self, other)
     elif isinstance(other, _ORIG_FLOAT_TYPE):
+        if _HAS_C_EXT:
+            return _fastmath.fast_mul_scalar(self, float(other))
         codes = _str_to_codes(self)
         return _codes_to_str([int(x * other) for x in codes])
     elif isinstance(other, str):
@@ -287,6 +298,8 @@ def string_truediv(self, divisor):
         divisor = _get_weight(divisor)
     if divisor == 0:
         raise ZeroDivisionError("string division by zero")
+    if _HAS_C_EXT:
+        return _fastmath.fast_truediv_scalar(self, float(divisor))
     codes = _str_to_codes(self)
     return _codes_to_str([int(x / divisor) for x in codes])
 
@@ -308,6 +321,8 @@ def string_floordiv(self, divisor):
         divisor = int(_get_weight(divisor))
     if divisor == 0:
         raise ZeroDivisionError("string integer division by zero")
+    if _HAS_C_EXT:
+        return _fastmath.fast_floordiv_scalar(self, int(divisor))
     codes = _str_to_codes(self)
     return _codes_to_str([x // int(divisor) for x in codes])
 
@@ -331,6 +346,8 @@ def string_sub(self, other):
             result = result.replace(char, "")
         return result
     elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        if _HAS_C_EXT:
+            return _fastmath.fast_sub_scalar(self, int(other))
         codes = _str_to_codes(self)
         shift = int(other)
         return _codes_to_str(codes - shift)
@@ -339,6 +356,8 @@ def string_sub(self, other):
 
 def string_rsub(self, other):
     if isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        if _HAS_C_EXT:
+            return _fastmath.fast_rsub_scalar(int(other), self)
         val = int(other)
         codes = _str_to_codes(self)
         return _codes_to_str([val - x for x in codes])
@@ -354,6 +373,9 @@ def string_mod(self, other):
         
     if other == 0:
         raise ZeroDivisionError("string modulo by zero")
+        
+    if _HAS_C_EXT:
+        return _fastmath.fast_mod_scalar(self, int(other))
         
     codes = _str_to_codes(self)
     return _codes_to_str([int(x % other) for x in codes])
@@ -382,6 +404,8 @@ def string_rdivmod(self, other):
 # --- Matrix Multiplication (@) ---
 
 def string_matmul(self, other):
+    if isinstance(other, str) and _HAS_C_EXT:
+        return _fastmath.fast_matmul(self, other)
     if isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         return sum(ord(c) * other for c in self)
     if isinstance(other, (list, tuple)):
@@ -430,6 +454,8 @@ def string_neg(self):
 
 
 def string_invert(self):
+    if _HAS_C_EXT:
+        return _fastmath.fast_invert(self)
     codes = _str_to_codes(self)
     return _codes_to_str([~x for x in codes])
 
@@ -480,9 +506,11 @@ def string_rrshift(self, other):
     return _codes_to_str([val >> int(x) for x in codes])
 
 
-def _bitwise_base(self, other, op_func, op_symbol):
-    raw_self_len = _PyUnicode_GetLength(self)
+def _bitwise_base(self, other, op_func, c_func, op_symbol):
     if isinstance(other, str):
+        if _HAS_C_EXT and c_func is not None:
+            return c_func(self, other)
+        raw_self_len = _PyUnicode_GetLength(self)
         raw_other_len = _PyUnicode_GetLength(other)
         max_len = max(raw_self_len, raw_other_len)
         s1 = self.ljust(max_len, '\x00')
@@ -496,14 +524,28 @@ def _bitwise_base(self, other, op_func, op_symbol):
         return _codes_to_str(op_func(codes, val))
 
 
-def string_and(self, other): return _bitwise_base(self, other, lambda x, y: x & y, '&')
-def string_rand(self, other): return _bitwise_base(self, other, lambda x, y: y & x, '&')
+def string_and(self, other):
+    return _bitwise_base(self, other, lambda x, y: x & y, _fastmath.fast_and if _HAS_C_EXT else None, '&')
 
-def string_or(self, other):  return _bitwise_base(self, other, lambda x, y: x | y, '|')
-def string_ror(self, other):  return _bitwise_base(self, other, lambda x, y: y | x, '|')
 
-def string_xor(self, other): return _bitwise_base(self, other, lambda x, y: x ^ y, '^')
-def string_rxor(self, other): return _bitwise_base(self, other, lambda x, y: y ^ x, '^')
+def string_rand(self, other):
+    return _bitwise_base(self, other, lambda x, y: y & x, _fastmath.fast_and if _HAS_C_EXT else None, '&')
+
+
+def string_or(self, other):
+    return _bitwise_base(self, other, lambda x, y: x | y, _fastmath.fast_or if _HAS_C_EXT else None, '|')
+
+
+def string_ror(self, other):
+    return _bitwise_base(self, other, lambda x, y: y | x, _fastmath.fast_or if _HAS_C_EXT else None, '|')
+
+
+def string_xor(self, other):
+    return _bitwise_base(self, other, lambda x, y: x ^ y, _fastmath.fast_xor if _HAS_C_EXT else None, '^')
+
+
+def string_rxor(self, other):
+    return _bitwise_base(self, other, lambda x, y: y ^ x, _fastmath.fast_xor if _HAS_C_EXT else None, '^')
 
 
 # --- Logical Comparison Operators & Iteration ---
@@ -655,6 +697,7 @@ def patch_strings():
 
     _PyType_Modified(MathChar)
     _PyType_Modified(str)
+
 
 for method in ALL_METHODS:
     func_name = f"string_{method}"

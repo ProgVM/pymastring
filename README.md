@@ -1,6 +1,6 @@
 # pymastring
 
-`pymastring` is a high-performance utility package that globally overrides the runtime behavior of Python's built-in primitive `str` class via deep C-level monkey-patching. It breaks standard type limitations to allow direct mathematical calculations, matrix equations, bitwise interactions, universal cross-type comparisons, and custom serialization paradigms natively on raw string literals.
+`pymastring` is a high-performance utility package that globally overrides the runtime behavior of Python's built-in primitive `str` class via deep C-level monkey-patching and compiled C-API extensions. It breaks standard type limitations to allow direct mathematical calculations, matrix equations, bitwise interactions, universal cross-type comparisons, stream ciphers, and custom serialization paradigms natively on raw string literals.
 
 ---
 
@@ -10,8 +10,11 @@ Python's built-in `str` instances are hardcoded at the C-API level to prevent ar
 
 Every mathematical operation maps characters to their respective **Unicode Code Points** (via 32-bit UCS-4 memory buffers), runs numerical adjustments, applies an auto-overflow modulo bounds-check (`% 1114112`), and decodes resulting buffers back into strings.
 
-### Performance & Memory Acceleration
-`pymastring` includes a zero-dependency C-level buffer engine utilizing Python's native `array('I')` with `utf-32-le` encoding/decoding. If `numpy` is installed in the system environment, `pymastring` automatically harnesses processor SIMD vector operations for instant array computation.
+### High-Performance Native C Extension Acceleration
+`pymastring` includes a compiled C-extension backend (`_fastmath.c`) that operates directly on `Py_UCS4` memory buffers at native C speed. 
+
+* **Native C Engine:** Leverages fast memory pointers in C for instant execution of bitwise operations, arithmetic shifts, modular exponentiation, and matrix dot products.
+* **Pure Python Fallback:** If a C compiler is unavailable during installation, `pymastring` seamlessly falls back to Python's native `array('I')` with `utf-32-le` buffer processing or optional `numpy` SIMD acceleration.
 
 `pymastring` provides total interoperability across all native Python types: numbers (`int`, `float`, `bool`), collections (`list`, `tuple`, `set`, `dict`, `bytes`), and custom third-party objects.
 
@@ -35,7 +38,7 @@ pip install .
 
 ## Core Features & Extended API Specification
 
-### 1. Universal Vectorized Arithmetic Engine (`+`, `-`, `*`, `/`, `//`, `%`, `**`)
+### 1. Universal C-Accelerated Arithmetic Engine (`+`, `-`, `*`, `/`, `//`, `%`, `**`)
 Standard string literals can be manipulated mathematically with numbers, strings, booleans, collections, and sequences across left-hand and right-hand operations.
 
 * **Addition (`+` / `radd`):** Integer/float/bool addition shifts character unicode codes forward (`"abc" + 1` -> `"bcd"`, `"abc" + True` -> `"bcd"`). Standard string concatenation (`"a" + "b"`) is retained.
@@ -60,7 +63,7 @@ print(divmod("a", 10))      # Returns tuple of (floordiv, modulo)
 ```
 
 ### 2. Stream Encryption & XOR Cipher Capability (`^`)
-Combining element-wise bitwise operations enables single-line Vernam / Stream encryption directly on raw strings without manual loops or `zip()` iterations.
+Combining element-wise bitwise C-accelerated operations enables single-line Vernam / Stream encryption directly on raw strings without manual loops or `zip()` iterations.
 
 ```python
 import pymastring
