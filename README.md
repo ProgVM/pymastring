@@ -1,6 +1,6 @@
 # pymastring
 
-`pymastring` is a utility package that globally overrides the runtime behavior of Python's built-in primitive `str` class via deep C-level monkey-patching. It breaks standard type limitations to allow direct mathematical calculations, matrix equations, bitwise interactions, universal cross-type comparisons, and custom serialization paradigms natively on raw string literals.
+`pymastring` is a high-performance utility package that globally overrides the runtime behavior of Python's built-in primitive `str` class via deep C-level monkey-patching. It breaks standard type limitations to allow direct mathematical calculations, matrix equations, bitwise interactions, universal cross-type comparisons, and custom serialization paradigms natively on raw string literals.
 
 ---
 
@@ -8,9 +8,12 @@
 
 Python's built-in `str` instances are hardcoded at the C-API level to prevent arbitrary mutation. `pymastring` bypasses this defense mechanism by temporarily modifying `PyTypeObject.tp_flags` and overwriting underlying C-slots (`tp_as_number`, `tp_as_sequence`, `tp_as_mapping`, `tp_richcompare`, `tp_iter`) via `ctypes` and garbage collector referent dictionaries.
 
-Every mathematical operation maps the characters of the string to their respective **Unicode Code Points** (via `ord()`), runs numerical adjustments, applies an auto-overflow modulo bounds-check (`% 1114112`), and returns the resulting value shifted back into strings (via `chr()`).
+Every mathematical operation maps characters to their respective **Unicode Code Points** (via 32-bit UCS-4 memory buffers), runs numerical adjustments, applies an auto-overflow modulo bounds-check (`% 1114112`), and decodes resulting buffers back into strings.
 
-`pymastring` features a recursive weight engine (`_get_weight`) and metaclass-enabled numeric casting (`_PatchedInt`, `_PatchedFloat`) ensuring total, crash-free interoperability across all native Python types: numbers (`int`, `float`, `bool`), collections (`list`, `tuple`, `set`, `dict`, `bytes`), and custom third-party objects.
+### Performance & Memory Acceleration
+`pymastring` includes a zero-dependency C-level buffer engine utilizing Python's native `array('I')` with `utf-32-le` encoding/decoding. If `numpy` is installed in the system environment, `pymastring` automatically harnesses processor SIMD vector operations for instant array computation.
+
+`pymastring` provides total interoperability across all native Python types: numbers (`int`, `float`, `bool`), collections (`list`, `tuple`, `set`, `dict`, `bytes`), and custom third-party objects.
 
 ---
 
@@ -32,10 +35,10 @@ pip install .
 
 ## Core Features & Extended API Specification
 
-### 1. Universal Arithmetic Engine (`+`, `-`, `*`, `/`, `//`, `%`, `**`)
+### 1. Universal Vectorized Arithmetic Engine (`+`, `-`, `*`, `/`, `//`, `%`, `**`)
 Standard string literals can be manipulated mathematically with numbers, strings, booleans, collections, and sequences across left-hand and right-hand operations.
 
-* **Addition (`+` / `radd`):** Integer/float/bool addition shifts character unicode codes forward (`"abc" + 1` -> `"bcd"`). Standard string concatenation (`"a" + "b"`) is retained.
+* **Addition (`+` / `radd`):** Integer/float/bool addition shifts character unicode codes forward (`"abc" + 1` -> `"bcd"`, `"abc" + True` -> `"bcd"`). Standard string concatenation (`"a" + "b"`) is retained.
 * **Subtraction (`-` / `rsub`):** Subtraction by a number reduces unicode codes (`"python" - 5`). Subtraction by another string removes target substring bytes (`"abcdef" - "bd"` -> `"acef"`). Subtraction from numbers (`1000 - "a"`) computes reverse shifts.
 * **Multiplication (`*` / `rmul`):** String-by-integer multiplication performs classic repetition (`"a" * 3`). String-by-float scales codes. String-by-string evaluates element-wise Hadamard multiplication.
 * **Division (`/`, `//`, `%`, `divmod`):** Performs exact truediv, floordiv, and modulo on character weights. Supports right-hand division (`200 / "a"`, `200 // "a"`) and native `divmod("abc", 2)`.
@@ -56,7 +59,25 @@ print(200 / "a")            # Right-hand division
 print(divmod("a", 10))      # Returns tuple of (floordiv, modulo)
 ```
 
-### 2. Matrix Cross-Multiplication Vector Behavior (`@`)
+### 2. Stream Encryption & XOR Cipher Capability (`^`)
+Combining element-wise bitwise operations enables single-line Vernam / Stream encryption directly on raw strings without manual loops or `zip()` iterations.
+
+```python
+import pymastring
+
+message = "secret_payload"
+key = "super_key_12345"
+
+# Encrypt in a single line
+encrypted = message ^ key
+print(encrypted)            # Outputs encrypted unicode characters
+
+# Decrypt back
+decrypted = encrypted ^ key
+print(decrypted)            # Outputs: "secret_payload"
+```
+
+### 3. Matrix Cross-Multiplication Vector Behavior (`@`)
 Using the `@` operator evaluates the structural linear algebra dot product between two string arrays or between strings and numeric vectors (`list`, `tuple`).
 
 ```python
@@ -69,7 +90,7 @@ print("a" @ "b")            # Outputs integer: 9506
 print("abc" @ [1, 2, 3])    # Outputs integer: 590
 ```
 
-### 3. Cross-Type Rich Comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`)
+### 4. Cross-Type Rich Comparisons (`>`, `<`, `>=`, `<=`, `==`, `!=`)
 Rich comparison algorithms evaluate recursive integrated inner array vector weight sums (`_get_weight`), allowing seamless comparisons between strings, numbers, nested lists, dicts, and custom objects.
 
 ```python
@@ -79,10 +100,10 @@ print("aaa" > 1)            # Compares 291 > 1 -> Outputs: True
 print(100 < "aaa")          # Compares 100 < 291 -> Outputs: True
 print("aaa" == 291)         # Weight equality -> Outputs: True
 print("abc" > [1, 2, 3])    # Compares string weight vs list weight -> Outputs: True
-print("abc" > None)         # Compares string weight vs object weight -> Outputs: True
+print("abc" > None)         # Compares string weight vs None weight -> Outputs: True
 ```
 
-### 4. Dynamic Structural Weight Evaluation & Element Extraction (`len()`, `str[i]`)
+### 5. Dynamic Structural Weight Evaluation & Element Extraction (`len()`, `str[i]`)
 
 The global `len()` invocation evaluates context dynamically. Standard raw string literals retain traditional element counts. However, iterated elements, indexed characters (`pymastring.MathChar("a")`), or `MathChar` objects compute and report the integrated unicode code point weight (`ord()`).
 
@@ -101,7 +122,7 @@ for char in "a":
     print(len(char))        # Outputs Unicode weight: 97
 ```
 
-### 5. Unary Operators & Transparent Casting (`-str`, `~str`, `abs()`, `int()`, `float()`, `round()`)
+### 6. Unary Operators & Transparent Casting (`-str`, `~str`, `abs()`, `int()`, `float()`, `round()`)
 
 * **Unary Negation (`-`):** Reverses the string (`-"abc"` -> `"cba"`).
 * **Bitwise NOT (`~`):** Inverts character bit positions (`~"abc"`).
@@ -119,7 +140,7 @@ print(float("123.45"))      # Parses float -> 123.45
 print(float("abc"))         # Fallback sum of weights -> 294.0
 ```
 
-### 6. Bitwise Vector Conversions (`<<`, `>>`, `&`, `|`, `^`)
+### 7. Bitwise Vector Conversions (`<<`, `>>`, `&`, `|`, `^`)
 Direct byte-level array transformations across registers supporting left-hand and right-hand operations.
 
 ```python
@@ -131,7 +152,7 @@ print("hello" & "world")     # Matrix intersection overlay
 print(15 & "a")             # Right-hand bitwise AND
 ```
 
-### 7. Typified Generator Array Extraction & Reversal
+### 8. Typified Generator Array Extraction & Reversal
 Loops and reversed iterators parsing raw string sequences yield operational wrappers (`MathChar`) inheriting full mathematical capabilities.
 
 ```python
@@ -141,7 +162,7 @@ for char in reversed("xyz"):
     print(char ** 1.5)
 ```
 
-### 8. Custom JSON Serialization Engine (`MathJSONEncoder`)
+### 9. Custom JSON Serialization Engine (`MathJSONEncoder`)
 To prevent internal character objects from breaking standard data transfers, use our targeted serialization mapping profile.
 
 ```python

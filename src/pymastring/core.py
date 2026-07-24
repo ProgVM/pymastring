@@ -1,8 +1,27 @@
+import array
 import builtins
 import ctypes
 import gc
 import json
 import math
+
+ALL_METHODS = [
+    "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "rtruediv",
+    "floordiv", "rfloordiv", "mod", "rmod", "divmod", "rdivmod",
+    "pow", "rpow", "matmul", "rmatmul", "len", "getitem",
+    "neg", "invert", "abs", "int", "float", "round",
+    "lshift", "rlshift", "rshift", "rrshift",
+    "and", "rand", "or", "ror", "xor", "rxor",
+    "gt", "lt", "ge", "le", "eq", "ne",
+    "iter", "reversed"
+]
+
+# Try importing numpy for SIMD vector acceleration if available
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
 
 # Save original builtin string descriptors BEFORE patch_strings runs
 _ORIGINAL_STR_ADD = str.__dict__["__add__"]
@@ -39,6 +58,26 @@ _PyErr_Clear = ctypes.pythonapi.PyErr_Clear
 
 # Global reference anchor to prevent C-struct GC deallocation
 _gc_protection = []
+
+
+# --- High-Performance Vectorized Buffer Helpers ---
+
+def _str_to_codes(s):
+    if _HAS_NUMPY:
+        return np.frombuffer(s.encode('utf-32-le'), dtype=np.uint32).astype(np.int64)
+    return array.array('I', s.encode('utf-32-le'))
+
+
+def _codes_to_str(codes):
+    if _HAS_NUMPY and isinstance(codes, np.ndarray):
+        bounded = (codes % 1114112).astype(np.uint32)
+        return bounded.tobytes().decode('utf-32-le')
+    elif isinstance(codes, array.array):
+        bounded = array.array('I', (int(x) % 1114112 for x in codes))
+        return bounded.tobytes().decode('utf-32-le')
+    else:
+        arr = array.array('I', (int(x) % 1114112 for x in codes))
+        return arr.tobytes().decode('utf-32-le')
 
 
 # --- Metaclasses for Universal Type Compatibility ---
@@ -167,17 +206,15 @@ class MathJSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-# --- Core Mathematical Operators ---
+# --- Core Mathematical Operators (Vectorized) ---
 
 def string_add(self, other):
     if isinstance(other, str):
         return _ORIGINAL_STR_ADD(self, other)
     elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE, bool)):
-        result_chars = []
-        for char in self:
-            final_code = int(ord(char) + int(other)) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        codes = _str_to_codes(self)
+        shift = int(other)
+        return _codes_to_str(codes + shift)
     return string_add(self, _get_weight(other))
 
 
@@ -188,44 +225,37 @@ def string_radd(self, other):
 def string_pow(self, power, modulo=None):
     if not isinstance(power, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         power = _get_weight(power)
-    result_chars = []
-    for char in self:
-        final_code = int(ord(char) ** power) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([int(int(x) ** power) for x in codes])
 
 
 def string_rpow(self, base):
     if not isinstance(base, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         base = _get_weight(base)
-    result_chars = []
-    for char in self:
-        final_code = int(base ** ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([int(base ** int(x)) for x in codes])
 
 
 def string_mul(self, other):
     if isinstance(other, _ORIG_INT_TYPE):
         return _ORIGINAL_STR_MUL(self, other)
     elif isinstance(other, _ORIG_FLOAT_TYPE):
-        result_chars = []
-        for char in self:
-            final_code = int(ord(char) * other) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        codes = _str_to_codes(self)
+        return _codes_to_str([int(x * other) for x in codes])
     elif isinstance(other, str):
         raw_self_len = _PyUnicode_GetLength(self)
         raw_other_len = _PyUnicode_GetLength(other)
         max_len = max(raw_self_len, raw_other_len)
         s1 = self.ljust(max_len, '\x00')
         s2 = other.ljust(max_len, '\x00')
-        result_chars = []
-        for c1, c2 in zip(s1, s2):
-            final_code = (ord(c1) * ord(c2)) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        c1 = _str_to_codes(s1)
+        c2 = _str_to_codes(s2)
+        return _codes_to_str(c1 * c2)
     return string_mul(self, _get_weight(other))
+
+
+def string_rmul(self, other):
+    return string_mul(self, other)
 
 
 def string_truediv(self, divisor):
@@ -233,23 +263,20 @@ def string_truediv(self, divisor):
         divisor = _get_weight(divisor)
     if divisor == 0:
         raise ZeroDivisionError("string division by zero")
-    result_chars = []
-    for char in self:
-        final_code = int(ord(char) / divisor) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([int(x / divisor) for x in codes])
 
 
 def string_rtruediv(self, dividend):
     if not isinstance(dividend, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         dividend = _get_weight(dividend)
-    result_chars = []
-    for char in self:
-        if ord(char) == 0:
+    codes = _str_to_codes(self)
+    res = []
+    for x in codes:
+        if x == 0:
             raise ZeroDivisionError("division by zero character code")
-        final_code = int(dividend / ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+        res.append(int(dividend / x))
+    return _codes_to_str(res)
 
 
 def string_floordiv(self, divisor):
@@ -257,23 +284,20 @@ def string_floordiv(self, divisor):
         divisor = int(_get_weight(divisor))
     if divisor == 0:
         raise ZeroDivisionError("string integer division by zero")
-    result_chars = []
-    for char in self:
-        final_code = (ord(char) // int(divisor)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([x // int(divisor) for x in codes])
 
 
 def string_rfloordiv(self, dividend):
     if not isinstance(dividend, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         dividend = int(_get_weight(dividend))
-    result_chars = []
-    for char in self:
-        if ord(char) == 0:
+    codes = _str_to_codes(self)
+    res = []
+    for x in codes:
+        if x == 0:
             raise ZeroDivisionError("integer division by zero character code")
-        final_code = (int(dividend) // ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+        res.append(int(dividend) // x)
+    return _codes_to_str(res)
 
 
 def string_sub(self, other):
@@ -283,21 +307,17 @@ def string_sub(self, other):
             result = result.replace(char, "")
         return result
     elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        result_chars = []
-        for char in self:
-            final_code = int(ord(char) - int(other)) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        codes = _str_to_codes(self)
+        shift = int(other)
+        return _codes_to_str(codes - shift)
     return string_sub(self, _get_weight(other))
 
 
 def string_rsub(self, other):
     if isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        result_chars = []
-        for char in self:
-            final_code = int(int(other) - ord(char)) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        val = int(other)
+        codes = _str_to_codes(self)
+        return _codes_to_str([val - x for x in codes])
     return string_rsub(self, _get_weight(other))
 
 
@@ -311,23 +331,20 @@ def string_mod(self, other):
     if other == 0:
         raise ZeroDivisionError("string modulo by zero")
         
-    result_chars = []
-    for char in self:
-        final_code = int(ord(char) % other) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([int(x % other) for x in codes])
 
 
 def string_rmod(self, other):
     if not isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         other = _get_weight(other)
-    result_chars = []
-    for char in self:
-        if ord(char) == 0:
+    codes = _str_to_codes(self)
+    res = []
+    for x in codes:
+        if x == 0:
             raise ZeroDivisionError("modulo by zero character code")
-        final_code = int(other % ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+        res.append(int(other % x))
+    return _codes_to_str(res)
 
 
 def string_divmod(self, other):
@@ -354,7 +371,9 @@ def string_matmul(self, other):
     max_len = max(raw_self_len, raw_other_len)
     s1 = self.ljust(max_len, '\x00')
     s2 = other.ljust(max_len, '\x00')
-    return sum(ord(c1) * ord(c2) for c1, c2 in zip(s1, s2))
+    c1 = _str_to_codes(s1)
+    c2 = _str_to_codes(s2)
+    return int(sum(c1 * c2))
 
 
 def string_rmatmul(self, other):
@@ -387,15 +406,13 @@ def string_neg(self):
 
 
 def string_invert(self):
-    result_chars = []
-    for char in self:
-        final_code = (~ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str([~x for x in codes])
 
 
 def string_abs(self):
-    square_sum = sum(ord(char) ** 2 for char in self)
+    codes = _str_to_codes(self)
+    square_sum = sum(int(x) ** 2 for x in codes)
     return math.sqrt(square_sum)
 
 
@@ -416,39 +433,27 @@ def string_round(self, ndigits=None):
 def string_lshift(self, shift):
     if not isinstance(shift, _ORIG_INT_TYPE):
         shift = int(_get_weight(shift))
-    result_chars = []
-    for char in self:
-        final_code = (ord(char) << shift) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str(codes << shift)
 
 
 def string_rlshift(self, other):
-    other = int(_get_weight(other))
-    result_chars = []
-    for char in self:
-        final_code = (other << ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    val = int(_get_weight(other))
+    codes = _str_to_codes(self)
+    return _codes_to_str([val << int(x) for x in codes])
 
 
 def string_rshift(self, shift):
     if not isinstance(shift, _ORIG_INT_TYPE):
         shift = int(_get_weight(shift))
-    result_chars = []
-    for char in self:
-        final_code = (ord(char) >> shift) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    codes = _str_to_codes(self)
+    return _codes_to_str(codes >> shift)
 
 
 def string_rrshift(self, other):
-    other = int(_get_weight(other))
-    result_chars = []
-    for char in self:
-        final_code = (other >> ord(char)) % 1114112
-        result_chars.append(chr(final_code))
-    return "".join(result_chars)
+    val = int(_get_weight(other))
+    codes = _str_to_codes(self)
+    return _codes_to_str([val >> int(x) for x in codes])
 
 
 def _bitwise_base(self, other, op_func, op_symbol):
@@ -458,18 +463,13 @@ def _bitwise_base(self, other, op_func, op_symbol):
         max_len = max(raw_self_len, raw_other_len)
         s1 = self.ljust(max_len, '\x00')
         s2 = other.ljust(max_len, '\x00')
-        result_chars = []
-        for c1, c2 in zip(s1, s2):
-            final_code = op_func(ord(c1), ord(c2)) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        c1 = _str_to_codes(s1)
+        c2 = _str_to_codes(s2)
+        return _codes_to_str(op_func(c1, c2))
     else:
         val = int(_get_weight(other))
-        result_chars = []
-        for char in self:
-            final_code = op_func(ord(char), val) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
+        codes = _str_to_codes(self)
+        return _codes_to_str(op_func(codes, val))
 
 
 def string_and(self, other): return _bitwise_base(self, other, lambda x, y: x & y, '&')
@@ -555,14 +555,14 @@ def patch_strings():
 
     str_struct = PyTypeObject.from_address(id(str))
     mathchar_struct = PyTypeObject.from_address(id(MathChar))
-    
+
     referents = gc.get_referents(str.__dict__)
     target_dict = next(obj for obj in referents if type(obj) is dict)
 
     methods = {
         "__add__": string_add, "__radd__": string_radd,
         "__sub__": string_sub, "__rsub__": string_rsub,
-        "__mul__": string_mul, "__rmul__": string_mul,
+        "__mul__": string_mul, "__rmul__": string_rmul,
         "__truediv__": string_truediv, "__rtruediv__": string_rtruediv,
         "__floordiv__": string_floordiv, "__rfloordiv__": string_rfloordiv,
         "__mod__": string_mod, "__rmod__": string_rmod,
@@ -599,7 +599,7 @@ def patch_strings():
         setattr(PatchBridge, name, func)
 
     bridge_struct = PyTypeObject.from_address(id(PatchBridge))
-    
+
     # Protect PatchBridge and bridge_struct from CPython Garbage Collection
     _gc_protection.append(PatchBridge)
     _gc_protection.append(bridge_struct)
@@ -624,17 +624,7 @@ def patch_strings():
         builtins.float = _PatchedFloat
         builtins._pymastring_patched = True
 
-    all_methods = [
-        "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "rtruediv",
-        "floordiv", "rfloordiv", "mod", "rmod", "divmod", "rdivmod",
-        "pow", "rpow", "matmul", "rmatmul", "len", "getitem",
-        "neg", "invert", "abs", "int", "float", "round",
-        "lshift", "rlshift", "rshift", "rrshift",
-        "and", "rand", "or", "ror", "xor", "rxor",
-        "gt", "lt", "ge", "le", "eq", "ne",
-        "iter", "reversed"
-    ]
-    for method in all_methods:
+    for method in ALL_METHODS:
         func_name = f"string_{method}"
         if func_name in globals():
             setattr(MathChar, f"__{method}__", globals()[func_name])
@@ -642,18 +632,7 @@ def patch_strings():
     _PyType_Modified(MathChar)
     _PyType_Modified(str)
 
-
-all_methods = [
-    "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "rtruediv",
-    "floordiv", "rfloordiv", "mod", "rmod", "divmod", "rdivmod",
-    "pow", "rpow", "matmul", "rmatmul", "len", "getitem",
-    "neg", "invert", "abs", "int", "float", "round",
-    "lshift", "rlshift", "rshift", "rrshift",
-    "and", "rand", "or", "ror", "xor", "rxor",
-    "gt", "lt", "ge", "le", "eq", "ne",
-    "iter", "reversed"
-]
-for method in all_methods:
+for method in ALL_METHODS:
     func_name = f"string_{method}"
     if func_name in globals():
         setattr(MathChar, f"__{method}__", globals()[func_name])

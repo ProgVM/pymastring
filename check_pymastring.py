@@ -1,25 +1,47 @@
 import pymastring
 
-# 1. Arithmetic with numbers and strings
-print("1. Addition:", "abc" + 1)            # Expected: "bcd"
-print("2. Right Addition:", 1 + "abc")      # Expected: "bcd"
-print("3. Subtraction:", "python" - 5)       # Expected: "ktocji"
+print("=== 1. Vectorized Arithmetic & Reflected Operators ===")
+print("Left Addition:", "abc" + 1)                 # "bcd"
+print("Right Addition:", 1 + "abc")                # "bcd"
+print("Bool Addition:", "abc" + True)              # "bcd"
+print("Left Subtraction:", "python" - 5)           # "ktocji"
+print("Right Subtraction:", 1000 - "a")            # chr(1000 - 97)
+print("Left Division:", "xyz" / 2)                 # Uniform code scaling
+print("Right Division:", 200 / "a")                # Right-hand division
+print("Left Modulo:", "a" % 10)                    # chr(97 % 10)
+print("Divmod:", divmod("a", 10))                  # (floordiv, modulo)
 
-# 4. Matrix multiplication
-print("4. Matrix @:", "a" @ "b")            # Expected: 9506
+print("\n=== 2. Single-Line Vernam Stream Cipher (XOR) ===")
+message = "secret_code"
+key = "my_super_key_123"
+encrypted = message ^ key
+decrypted = encrypted ^ key
+print("Encrypted:", encrypted)
+print("Decrypted:", decrypted)                     # "secret_code"
 
-# 5. Length evaluation
-print("5. Base len:", len("abc"))           # Expected: 3
+print("\n=== 3. Matrix Vector Dot Product (@) ===")
+print("String @ String:", "a" @ "b")               # 9506
+print("String @ List:", "abc" @ [1, 2, 3])         # 590
+
+print("\n=== 4. Cross-Type Rich Comparisons ===")
+print("String > Integer:", "aaa" > 1)              # True (291 > 1)
+print("Integer < String:", 100 < "aaa")            # True (100 < 291)
+print("String == Weight:", "aaa" == 291)           # True
+print("String > List:", "abc" > [1, 2, 3])         # True
+print("String > None:", "abc" > None)              # True (294 > 0)
+
+print("\n=== 5. Dynamic Weight Evaluation & Iteration ===")
+print("Base string length:", len("abc"))           # 3
 for char in "a":
-    print("6. Loop char len:", len(char))   # Expected: 97
+    print("Loop char length:", len(char))          # 97
 
-# 7. Unary operators
-print("7. Negation (reverse):", -"abc")     # Expected: "cba"
-print("8. Vector norm abs():", abs("abc"))  # Expected: ~169.81
+print("\n=== 6. Unary Operators & Vector Norm ===")
+print("Negation (Reverse):", -"abc")               # "cba"
+print("Vector Norm abs():", abs("abc"))            # ~169.75
 
-# 9. Numeric casting
-print("9. Valid Int cast:", int("123"))     # Expected: 123
-print("10. Valid Float cast:", float("123.45")) # Expected: 123.45
-
-# 11. Comparisons
-print("11. Rich Comparison:", "longer" > "short") # Expected: True
+print("\n=== 7. Metaclass-Enabled Transparent Casting ===")
+print("Numeric Int Cast:", int("123"))             # 123
+print("Non-Numeric Int Cast:", int("abc"))         # 294
+print("Numeric Float Cast:", float("123.45"))      # 123.45
+print("Non-Numeric Float Cast:", float("abc"))     # 294.0
+print("Isinstance check:", isinstance(0, int))     # True
