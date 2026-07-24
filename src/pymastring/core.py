@@ -223,17 +223,41 @@ def string_radd(self, other):
 
 
 def string_pow(self, power, modulo=None):
-    if not isinstance(power, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        power = _get_weight(power)
+    if isinstance(power, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        p_val = power
+    else:
+        p_val = _get_weight(power)
+    
     codes = _str_to_codes(self)
-    return _codes_to_str([int(int(x) ** power) for x in codes])
+    res = []
+    for x in codes:
+        if isinstance(p_val, (int, _ORIG_INT_TYPE)) and p_val >= 0:
+            res.append(pow(int(x), int(p_val), 1114112))
+        else:
+            try:
+                res.append(pow(int(x), int(p_val), 1114112))
+            except Exception:
+                res.append(int(int(x) ** p_val) % 1114112)
+    return _codes_to_str(res)
 
 
 def string_rpow(self, base):
-    if not isinstance(base, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
-        base = _get_weight(base)
+    if isinstance(base, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        b_val = base
+    else:
+        b_val = _get_weight(base)
+        
     codes = _str_to_codes(self)
-    return _codes_to_str([int(base ** int(x)) for x in codes])
+    res = []
+    for x in codes:
+        if isinstance(b_val, (int, _ORIG_INT_TYPE)) and b_val >= 0:
+            res.append(pow(int(b_val), int(x), 1114112))
+        else:
+            try:
+                res.append(pow(int(b_val), int(x), 1114112))
+            except Exception:
+                res.append(int(b_val ** int(x)) % 1114112)
+    return _codes_to_str(res)
 
 
 def string_mul(self, other):
