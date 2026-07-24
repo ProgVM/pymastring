@@ -1,3 +1,4 @@
+import builtins
 import ctypes
 import gc
 import json
@@ -7,6 +8,11 @@ import math
 _ORIGINAL_STR_ADD = str.__dict__["__add__"]
 _ORIGINAL_STR_MUL = str.__dict__["__mul__"]
 _ORIGINAL_STR_GETITEM = str.__dict__["__getitem__"]
+_ORIGINAL_STR_EQ = str.__dict__["__eq__"]
+
+# Save original types
+_ORIG_INT_TYPE = builtins.int
+_ORIG_FLOAT_TYPE = builtins.float
 
 # Direct references to native CPython C-API functions
 _PyUnicode_Format = ctypes.pythonapi.PyUnicode_Format
@@ -25,10 +31,98 @@ _PyFloat_FromString = ctypes.pythonapi.PyFloat_FromString
 _PyFloat_FromString.argtypes = [ctypes.py_object]
 _PyFloat_FromString.restype = ctypes.py_object
 
+_PyType_Modified = ctypes.pythonapi.PyType_Modified
+_PyType_Modified.argtypes = [ctypes.py_object]
+_PyType_Modified.restype = None
+
 _PyErr_Clear = ctypes.pythonapi.PyErr_Clear
 
 # Global reference anchor to prevent C-struct GC deallocation
 _gc_protection = []
+
+
+# --- Metaclasses for Universal Type Compatibility ---
+
+class _PatchedIntMeta(type):
+    def __instancecheck__(cls, instance):
+        return isinstance(instance, _ORIG_INT_TYPE)
+
+    def __subclasscheck__(cls, subclass):
+        return issubclass(subclass, _ORIG_INT_TYPE)
+
+
+class _PatchedFloatMeta(type):
+    def __instancecheck__(cls, instance):
+        return isinstance(instance, _ORIG_FLOAT_TYPE)
+
+    def __subclasscheck__(cls, subclass):
+        return issubclass(subclass, _ORIG_FLOAT_TYPE)
+
+
+# --- Subclassed Numeric Types with Direct C-API Casting ---
+
+class _PatchedInt(_ORIG_INT_TYPE, metaclass=_PatchedIntMeta):
+    def __new__(cls, val=0, *args, **kwargs):
+        if isinstance(val, str):
+            try:
+                base = kwargs.get("base", 10)
+                res = _PyLong_FromUnicodeObject(val, 0, base)
+                if res is not None:
+                    return res
+            except Exception:
+                pass
+            _PyErr_Clear()
+            return _ORIG_INT_TYPE.__new__(cls, sum(ord(c) for c in val))
+        return _ORIG_INT_TYPE.__new__(cls, val, *args, **kwargs)
+
+
+class _PatchedFloat(_ORIG_FLOAT_TYPE, metaclass=_PatchedFloatMeta):
+    def __new__(cls, val=0.0):
+        if isinstance(val, str):
+            try:
+                res = _PyFloat_FromString(val)
+                if res is not None:
+                    return res
+            except Exception:
+                pass
+            _PyErr_Clear()
+            return _ORIG_FLOAT_TYPE.__new__(cls, float(sum(ord(c) for c in val)))
+        return _ORIG_FLOAT_TYPE.__new__(cls, val)
+
+
+# --- Universal Recursive Weight Evaluation Helper ---
+
+def _get_weight(obj):
+    if obj is None:
+        return 0.0
+    if isinstance(obj, str):
+        if isinstance(obj, MathChar):
+            return string_len(obj)
+        return float(sum(ord(c) for c in obj))
+    elif isinstance(obj, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE, bool)):
+        return float(obj)
+    elif isinstance(obj, complex):
+        return abs(obj)
+    elif isinstance(obj, (bytes, bytearray, memoryview)):
+        return float(sum(obj))
+    elif hasattr(obj, "items"):
+        try:
+            return float(sum(_get_weight(k) + _get_weight(v) for k, v in obj.items()))
+        except Exception:
+            pass
+    elif hasattr(obj, "__iter__") and not isinstance(obj, (str, bytes, bytearray)):
+        try:
+            return float(sum(_get_weight(item) for item in obj))
+        except Exception:
+            pass
+    try:
+        return float(len(obj))
+    except Exception:
+        pass
+    try:
+        return float(sum(ord(c) for c in str(obj)))
+    except Exception:
+        return 0.0
 
 
 # --- Custom String Elements for Advanced Iteration & Indexing ---
@@ -78,24 +172,22 @@ class MathJSONEncoder(json.JSONEncoder):
 def string_add(self, other):
     if isinstance(other, str):
         return _ORIGINAL_STR_ADD(self, other)
-    elif isinstance(other, (int, float)):
+    elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE, bool)):
         result_chars = []
         for char in self:
             final_code = int(ord(char) + int(other)) % 1114112
             result_chars.append(chr(final_code))
         return "".join(result_chars)
-    return NotImplemented
+    return string_add(self, _get_weight(other))
 
 
 def string_radd(self, other):
-    if isinstance(other, (int, float)):
-        return string_add(self, other)
-    return NotImplemented
+    return string_add(self, other)
 
 
 def string_pow(self, power, modulo=None):
-    if not isinstance(power, (int, float)):
-        raise TypeError(f"unsupported operand type(s) for ** or pow(): '{type(self).__name__}' and '{type(power).__name__}'")
+    if not isinstance(power, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        power = _get_weight(power)
     result_chars = []
     for char in self:
         final_code = int(ord(char) ** power) % 1114112
@@ -103,10 +195,20 @@ def string_pow(self, power, modulo=None):
     return "".join(result_chars)
 
 
+def string_rpow(self, base):
+    if not isinstance(base, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        base = _get_weight(base)
+    result_chars = []
+    for char in self:
+        final_code = int(base ** ord(char)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
 def string_mul(self, other):
-    if isinstance(other, int):
+    if isinstance(other, _ORIG_INT_TYPE):
         return _ORIGINAL_STR_MUL(self, other)
-    elif isinstance(other, float):
+    elif isinstance(other, _ORIG_FLOAT_TYPE):
         result_chars = []
         for char in self:
             final_code = int(ord(char) * other) % 1114112
@@ -123,12 +225,12 @@ def string_mul(self, other):
             final_code = (ord(c1) * ord(c2)) % 1114112
             result_chars.append(chr(final_code))
         return "".join(result_chars)
-    return NotImplemented
+    return string_mul(self, _get_weight(other))
 
 
 def string_truediv(self, divisor):
-    if not isinstance(divisor, (int, float)):
-        raise TypeError(f"unsupported operand type(s) for /: '{type(self).__name__}' and '{type(divisor).__name__}'")
+    if not isinstance(divisor, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        divisor = _get_weight(divisor)
     if divisor == 0:
         raise ZeroDivisionError("string division by zero")
     result_chars = []
@@ -138,14 +240,38 @@ def string_truediv(self, divisor):
     return "".join(result_chars)
 
 
+def string_rtruediv(self, dividend):
+    if not isinstance(dividend, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        dividend = _get_weight(dividend)
+    result_chars = []
+    for char in self:
+        if ord(char) == 0:
+            raise ZeroDivisionError("division by zero character code")
+        final_code = int(dividend / ord(char)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
 def string_floordiv(self, divisor):
-    if not isinstance(divisor, int):
-        raise TypeError(f"unsupported operand type(s) for //: '{type(self).__name__}' and '{type(divisor).__name__}'")
+    if not isinstance(divisor, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        divisor = int(_get_weight(divisor))
     if divisor == 0:
         raise ZeroDivisionError("string integer division by zero")
     result_chars = []
     for char in self:
-        final_code = (ord(char) // divisor) % 1114112
+        final_code = (ord(char) // int(divisor)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
+def string_rfloordiv(self, dividend):
+    if not isinstance(dividend, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        dividend = int(_get_weight(dividend))
+    result_chars = []
+    for char in self:
+        if ord(char) == 0:
+            raise ZeroDivisionError("integer division by zero character code")
+        final_code = (int(dividend) // ord(char)) % 1114112
         result_chars.append(chr(final_code))
     return "".join(result_chars)
 
@@ -156,31 +282,31 @@ def string_sub(self, other):
         for char in other:
             result = result.replace(char, "")
         return result
-    elif isinstance(other, (int, float)):
+    elif isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         result_chars = []
         for char in self:
             final_code = int(ord(char) - int(other)) % 1114112
             result_chars.append(chr(final_code))
         return "".join(result_chars)
-    raise TypeError(f"unsupported operand type(s) for -: '{type(self).__name__}' and '{type(other).__name__}'")
+    return string_sub(self, _get_weight(other))
 
 
 def string_rsub(self, other):
-    if isinstance(other, (int, float)):
+    if isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
         result_chars = []
         for char in self:
             final_code = int(int(other) - ord(char)) % 1114112
             result_chars.append(chr(final_code))
         return "".join(result_chars)
-    return NotImplemented
+    return string_rsub(self, _get_weight(other))
 
 
 def string_mod(self, other):
     if isinstance(other, (tuple, dict)) or "%s" in self or "%d" in self or "%f" in self:
         return _PyUnicode_Format(self, other)
         
-    if not isinstance(other, (int, float)):
-        raise TypeError(f"unsupported operand type(s) for %: '{type(self).__name__}' and '{type(other).__name__}'")
+    if not isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        other = _get_weight(other)
         
     if other == 0:
         raise ZeroDivisionError("string modulo by zero")
@@ -192,19 +318,35 @@ def string_mod(self, other):
     return "".join(result_chars)
 
 
+def string_rmod(self, other):
+    if not isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        other = _get_weight(other)
+    result_chars = []
+    for char in self:
+        if ord(char) == 0:
+            raise ZeroDivisionError("modulo by zero character code")
+        final_code = int(other % ord(char)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
 def string_divmod(self, other):
     return (string_floordiv(self, other), string_mod(self, other))
 
 
 def string_rdivmod(self, other):
-    return (string_rsub(self, other), string_mod(self, other))
+    return (string_rfloordiv(self, other), string_rmod(self, other))
 
 
 # --- Matrix Multiplication (@) ---
 
 def string_matmul(self, other):
+    if isinstance(other, (_ORIG_INT_TYPE, _ORIG_FLOAT_TYPE)):
+        return sum(ord(c) * other for c in self)
+    if isinstance(other, (list, tuple)):
+        return sum(ord(c) * _get_weight(elem) for c, elem in zip(self, other))
     if not isinstance(other, str):
-        raise TypeError(f"unsupported operand type(s) for @: '{type(self).__name__}' and '{type(other).__name__}'")
+        return sum(ord(c) * _get_weight(other) for c in self)
     
     raw_self_len = _PyUnicode_GetLength(self)
     raw_other_len = _PyUnicode_GetLength(other)
@@ -213,6 +355,10 @@ def string_matmul(self, other):
     s1 = self.ljust(max_len, '\x00')
     s2 = other.ljust(max_len, '\x00')
     return sum(ord(c1) * ord(c2) for c1, c2 in zip(s1, s2))
+
+
+def string_rmatmul(self, other):
+    return string_matmul(self, other)
 
 
 # --- Custom Advanced Length & Indexing Hooks ---
@@ -254,25 +400,11 @@ def string_abs(self):
 
 
 def string_int(self, base=10):
-    try:
-        res = _PyLong_FromUnicodeObject(self, 0, base)
-        if res is not None:
-            return res
-    except Exception:
-        pass
-    _PyErr_Clear()
-    return sum(ord(char) for char in self)
+    return _PatchedInt(self)
 
 
 def string_float(self):
-    try:
-        res = _PyFloat_FromString(self)
-        if res is not None:
-            return res
-    except Exception:
-        pass
-    _PyErr_Clear()
-    return float(sum(ord(char) for char in self))
+    return _PatchedFloat(self)
 
 
 def string_round(self, ndigits=None):
@@ -282,8 +414,8 @@ def string_round(self, ndigits=None):
 # --- Bitwise Operators (<<, >>, &, |, ^) ---
 
 def string_lshift(self, shift):
-    if not isinstance(shift, int):
-        raise TypeError(f"unsupported operand type(s) for <<: '{type(self).__name__}' and '{type(shift).__name__}'")
+    if not isinstance(shift, _ORIG_INT_TYPE):
+        shift = int(_get_weight(shift))
     result_chars = []
     for char in self:
         final_code = (ord(char) << shift) % 1114112
@@ -291,9 +423,18 @@ def string_lshift(self, shift):
     return "".join(result_chars)
 
 
+def string_rlshift(self, other):
+    other = int(_get_weight(other))
+    result_chars = []
+    for char in self:
+        final_code = (other << ord(char)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
 def string_rshift(self, shift):
-    if not isinstance(shift, int):
-        raise TypeError(f"unsupported operand type(s) for >>: '{type(self).__name__}' and '{type(shift).__name__}'")
+    if not isinstance(shift, _ORIG_INT_TYPE):
+        shift = int(_get_weight(shift))
     result_chars = []
     for char in self:
         final_code = (ord(char) >> shift) % 1114112
@@ -301,15 +442,18 @@ def string_rshift(self, shift):
     return "".join(result_chars)
 
 
+def string_rrshift(self, other):
+    other = int(_get_weight(other))
+    result_chars = []
+    for char in self:
+        final_code = (other >> ord(char)) % 1114112
+        result_chars.append(chr(final_code))
+    return "".join(result_chars)
+
+
 def _bitwise_base(self, other, op_func, op_symbol):
     raw_self_len = _PyUnicode_GetLength(self)
-    if isinstance(other, int):
-        result_chars = []
-        for char in self:
-            final_code = op_func(ord(char), other) % 1114112
-            result_chars.append(chr(final_code))
-        return "".join(result_chars)
-    elif isinstance(other, str):
+    if isinstance(other, str):
         raw_other_len = _PyUnicode_GetLength(other)
         max_len = max(raw_self_len, raw_other_len)
         s1 = self.ljust(max_len, '\x00')
@@ -319,26 +463,45 @@ def _bitwise_base(self, other, op_func, op_symbol):
             final_code = op_func(ord(c1), ord(c2)) % 1114112
             result_chars.append(chr(final_code))
         return "".join(result_chars)
-    raise TypeError(f"unsupported operand type(s) for {op_symbol}: '{type(self).__name__}' and '{type(other).__name__}'")
+    else:
+        val = int(_get_weight(other))
+        result_chars = []
+        for char in self:
+            final_code = op_func(ord(char), val) % 1114112
+            result_chars.append(chr(final_code))
+        return "".join(result_chars)
 
 
 def string_and(self, other): return _bitwise_base(self, other, lambda x, y: x & y, '&')
+def string_rand(self, other): return _bitwise_base(self, other, lambda x, y: y & x, '&')
+
 def string_or(self, other):  return _bitwise_base(self, other, lambda x, y: x | y, '|')
+def string_ror(self, other):  return _bitwise_base(self, other, lambda x, y: y | x, '|')
+
 def string_xor(self, other): return _bitwise_base(self, other, lambda x, y: x ^ y, '^')
+def string_rxor(self, other): return _bitwise_base(self, other, lambda x, y: y ^ x, '^')
 
 
 # --- Logical Comparison Operators & Iteration ---
 
 def _compare_strings(self, other, op):
-    if not isinstance(other, str):
-        raise TypeError(f"not supported between instances of '{type(self).__name__}' and '{type(other).__name__}'")
-    return op(string_len(self), string_len(other))
+    return op(_get_weight(self), _get_weight(other))
 
 
 def string_gt(self, other): return _compare_strings(self, other, lambda x, y: x > y)
 def string_lt(self, other): return _compare_strings(self, other, lambda x, y: x < y)
 def string_ge(self, other): return _compare_strings(self, other, lambda x, y: x >= y)
 def string_le(self, other): return _compare_strings(self, other, lambda x, y: x <= y)
+
+
+def string_eq(self, other):
+    if isinstance(other, str):
+        return _ORIGINAL_STR_EQ(self, other)
+    return _get_weight(self) == _get_weight(other)
+
+
+def string_ne(self, other):
+    return not string_eq(self, other)
 
 
 def string_iter(self):
@@ -391,6 +554,7 @@ def patch_strings():
     ]
 
     str_struct = PyTypeObject.from_address(id(str))
+    mathchar_struct = PyTypeObject.from_address(id(MathChar))
     
     referents = gc.get_referents(str.__dict__)
     target_dict = next(obj for obj in referents if type(obj) is dict)
@@ -399,14 +563,23 @@ def patch_strings():
         "__add__": string_add, "__radd__": string_radd,
         "__sub__": string_sub, "__rsub__": string_rsub,
         "__mul__": string_mul, "__rmul__": string_mul,
-        "__truediv__": string_truediv, "__floordiv__": string_floordiv,
-        "__mod__": string_mod, "__divmod__": string_divmod, "__rdivmod__": string_rdivmod,
-        "__pow__": string_pow, "__matmul__": string_matmul, "__len__": string_len,
-        "__getitem__": string_getitem, "__neg__": string_neg, "__invert__": string_invert,
+        "__truediv__": string_truediv, "__rtruediv__": string_rtruediv,
+        "__floordiv__": string_floordiv, "__rfloordiv__": string_rfloordiv,
+        "__mod__": string_mod, "__rmod__": string_rmod,
+        "__divmod__": string_divmod, "__rdivmod__": string_rdivmod,
+        "__pow__": string_pow, "__rpow__": string_rpow,
+        "__matmul__": string_matmul, "__rmatmul__": string_rmatmul,
+        "__len__": string_len, "__getitem__": string_getitem,
+        "__neg__": string_neg, "__invert__": string_invert,
         "__abs__": string_abs, "__int__": string_int, "__float__": string_float,
-        "__round__": string_round, "__lshift__": string_lshift, "__rshift__": string_rshift,
-        "__and__": string_and, "__or__": string_or, "__xor__": string_xor,
+        "__round__": string_round,
+        "__lshift__": string_lshift, "__rlshift__": string_rlshift,
+        "__rshift__": string_rshift, "__rrshift__": string_rrshift,
+        "__and__": string_and, "__rand__": string_rand,
+        "__or__": string_or, "__ror__": string_ror,
+        "__xor__": string_xor, "__rxor__": string_rxor,
         "__gt__": string_gt, "__lt__": string_lt, "__ge__": string_ge, "__le__": string_le,
+        "__eq__": string_eq, "__ne__": string_ne,
         "__iter__": string_iter, "__reversed__": string_reversed
     }
 
@@ -431,17 +604,34 @@ def patch_strings():
     _gc_protection.append(PatchBridge)
     _gc_protection.append(bridge_struct)
 
+    # Assign C-slots for str struct
     str_struct.tp_as_number = bridge_struct.tp_as_number
     str_struct.tp_as_sequence = bridge_struct.tp_as_sequence
     str_struct.tp_as_mapping = bridge_struct.tp_as_mapping
     str_struct.tp_richcompare = bridge_struct.tp_richcompare
     str_struct.tp_iter = bridge_struct.tp_iter
 
+    # Assign C-slots for MathChar struct as well
+    mathchar_struct.tp_as_number = bridge_struct.tp_as_number
+    mathchar_struct.tp_as_sequence = bridge_struct.tp_as_sequence
+    mathchar_struct.tp_as_mapping = bridge_struct.tp_as_mapping
+    mathchar_struct.tp_richcompare = bridge_struct.tp_richcompare
+    mathchar_struct.tp_iter = bridge_struct.tp_iter
+
+    # Transparently patch builtins.int and builtins.float with metaclass-enabled type subclasses
+    if not getattr(builtins, "_pymastring_patched", False):
+        builtins.int = _PatchedInt
+        builtins.float = _PatchedFloat
+        builtins._pymastring_patched = True
+
     all_methods = [
-        "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "floordiv",
-        "mod", "divmod", "rdivmod", "pow", "matmul", "len", "getitem",
+        "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "rtruediv",
+        "floordiv", "rfloordiv", "mod", "rmod", "divmod", "rdivmod",
+        "pow", "rpow", "matmul", "rmatmul", "len", "getitem",
         "neg", "invert", "abs", "int", "float", "round",
-        "lshift", "rshift", "and", "or", "xor", "gt", "lt", "ge", "le",
+        "lshift", "rlshift", "rshift", "rrshift",
+        "and", "rand", "or", "ror", "xor", "rxor",
+        "gt", "lt", "ge", "le", "eq", "ne",
         "iter", "reversed"
     ]
     for method in all_methods:
@@ -449,15 +639,18 @@ def patch_strings():
         if func_name in globals():
             setattr(MathChar, f"__{method}__", globals()[func_name])
 
-    ctypes.pythonapi.PyType_Modified(ctypes.py_object(MathChar))
-    ctypes.pythonapi.PyType_Modified(ctypes.py_object(str))
+    _PyType_Modified(MathChar)
+    _PyType_Modified(str)
 
 
 all_methods = [
-    "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "floordiv",
-    "mod", "divmod", "rdivmod", "pow", "matmul", "len", "getitem",
+    "add", "radd", "sub", "rsub", "mul", "rmul", "truediv", "rtruediv",
+    "floordiv", "rfloordiv", "mod", "rmod", "divmod", "rdivmod",
+    "pow", "rpow", "matmul", "rmatmul", "len", "getitem",
     "neg", "invert", "abs", "int", "float", "round",
-    "lshift", "rshift", "and", "or", "xor", "gt", "lt", "ge", "le",
+    "lshift", "rlshift", "rshift", "rrshift",
+    "and", "rand", "or", "ror", "xor", "rxor",
+    "gt", "lt", "ge", "le", "eq", "ne",
     "iter", "reversed"
 ]
 for method in all_methods:
